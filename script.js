@@ -525,7 +525,7 @@
       if (d.dataUrl.startsWith('{')) {
         try {
           const meta = JSON.parse(d.dataUrl);
-          if (meta && meta.kind === 'chunked-audio' && meta.chunks > 0) {
+          if (meta && (meta.kind === 'chunked-audio' || meta.kind === 'chunked-media') && meta.chunks > 0) {
             const snaps = await Promise.all(
               Array.from({ length: meta.chunks }, (_, idx) =>
                 fbStoreMod.getDoc(
@@ -554,7 +554,7 @@
         }
       }
 
-      if (d.mediaType === 'audio' && d.dataUrl.startsWith('data:')) {
+      if ((d.mediaType === 'audio' || d.mediaType === 'video') && d.dataUrl.startsWith('data:')) {
         const commaIdx = d.dataUrl.indexOf(',');
         const header = d.dataUrl.slice(0, commaIdx);
         const mimeMatch = header.match(/data:([^;]+)/);
@@ -1497,16 +1497,20 @@
       return;
     }
 
-    // Audio upload (supports up to 15 MB via chunked Firestore documents for Android & iOS)
-    if (blob.size > 15 * 1024 * 1024) {
+    // Audio / video upload (chunked Firestore documents for Android & iOS)
+    if (blob.size > 25 * 1024 * 1024) {
       throw new Error(
-        'MP3 file is larger than 15 MB. Please pick an audio file under 15 MB.'
+        mediaType === 'video'
+          ? 'Video file is larger than 25 MB. Please pick a video under 25 MB.'
+          : 'MP3 file is larger than 15 MB. Please pick an audio file under 15 MB.'
       );
     }
-    const mime = normalizeAudioMime(
-      blob.type,
-      blob instanceof File ? blob.name : undefined
-    );
+    const mime = mediaType === 'video'
+      ? (blob.type || 'video/mp4')
+      : normalizeAudioMime(
+          blob.type,
+          blob instanceof File ? blob.name : undefined
+        );
     const rawDataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(typeof r.result === 'string' ? r.result : '');
@@ -1520,7 +1524,7 @@
     const singleDataUrl = 'data:' + mime + ';base64,' + base64;
     if (singleDataUrl.length <= 780000) {
       await fbStoreMod.setDoc(fbStoreMod.doc(fbDb, 'media', safeId), {
-        mediaType: 'audio',
+        mediaType,
         dataUrl: singleDataUrl,
         createdAt: fbStoreMod.serverTimestamp(),
         uploadedByUid: uid,
@@ -1546,7 +1550,7 @@
           fbStoreMod.setDoc(
             fbStoreMod.doc(fbDb, 'media', safeId + '_c' + (i + idxOffset)),
             {
-              mediaType: 'audio',
+              mediaType,
               dataUrl: chunkStr,
               createdAt: fbStoreMod.serverTimestamp(),
               uploadedByUid: uid,
@@ -1558,13 +1562,13 @@
 
     const manifest = JSON.stringify({
       v: 1,
-      kind: 'chunked-audio',
+      kind: 'chunked-media',
       mime,
       chunks: chunks.length,
       size: blob.size,
     });
     await fbStoreMod.setDoc(fbStoreMod.doc(fbDb, 'media', safeId), {
-      mediaType: 'audio',
+      mediaType,
       dataUrl: manifest,
       createdAt: fbStoreMod.serverTimestamp(),
       uploadedByUid: uid,
@@ -1609,10 +1613,13 @@
         if (m.imageMediaId) {
           await uploadMediaIfNeeded(m.imageMediaId, 'image', uid);
         }
+        if (m.videoMediaId) {
+          await uploadMediaIfNeeded(m.videoMediaId, 'video', uid);
+        }
       }
       for (const g of state.gallery) {
-        if (g.mediaId && g.mediaType === 'image') {
-          await uploadMediaIfNeeded(g.mediaId, 'image', uid);
+        if (g.mediaId && (g.mediaType === 'image' || g.mediaType === 'video')) {
+          await uploadMediaIfNeeded(g.mediaId, g.mediaType, uid);
         }
       }
 
@@ -2254,8 +2261,8 @@
       if (!file) return;
       const id = 'gal-' + type + '-' + Date.now();
       await saveBlob(id, file);
-      if (type === 'image' && isCloudCreatorSignedIn() && fbUser) {
-        trackMediaUploadTask(id, 'image', fbUser.uid);
+      if (isCloudCreatorSignedIn() && fbUser) {
+        trackMediaUploadTask(id, type, fbUser.uid);
       }
       const url = URL.createObjectURL(file);
       state.gallery.push({
@@ -3005,8 +3012,8 @@
       if (!g) return;
       const id = 'gal-' + type + '-' + Date.now();
       await saveBlob(id, file);
-      if (type === 'image' && isCloudCreatorSignedIn() && fbUser) {
-        trackMediaUploadTask(id, 'image', fbUser.uid);
+      if (isCloudCreatorSignedIn() && fbUser) {
+        trackMediaUploadTask(id, type, fbUser.uid);
       }
       g.mediaType = type;
       g.mediaId = id;
